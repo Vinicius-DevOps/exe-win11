@@ -3,7 +3,7 @@ import subprocess
 
 def main():
     # PowerShell: pega a chave OEM/retail quando disponível
-    ps_cmd = r"(Get-WmiObject -Query 'select * from SoftwareLicense').OA3xOriginalProductKey"
+    ps_cmd = r"powershell (Get-WmiObject -query 'select * from SoftwareLicensingService').OA3xOriginalProductKey"
 
     # chama powershell sem perfil e ignorando ExecutionPolicy (só na sessão)
     result = subprocess.run(

@@ -33,10 +33,18 @@ def main():
     ns = result_key.stdout.strip() or "(não encontrada)"
     name = result_dv.stdout.strip() or "(não encontrado)"
 
+    print("-------------------------------------------")
+    print("Coleta de informações")
+    print("-------------------------------------------")
+    # Quebra de linha para melhor visualização
+    print()
     print(f"Nome do dispositivo: {name}")
+    print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
     print(f"Chave do Windows: {key}")
+    print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
     print(f"Número de série do Windows: {ns}")
-    
+    print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
+
     input("Pressione Enter para sair...")
 
 if __name__ == "__main__":

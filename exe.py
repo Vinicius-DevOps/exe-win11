@@ -2,36 +2,30 @@
 import subprocess
 import sys
 import shutil
-from typing import Optional, Tuple
+import tempfile
+import os
+import re
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 # -----------------------------
 # Utilidades gerais
 # -----------------------------
-def run(cmd: list[str], check: bool = False) -> Tuple[int, str, str]:
-    """Executa um comando e retorna (returncode, stdout, stderr)."""
+def run(cmd, check=False):
     try:
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            shell=False
-        )
+        p = subprocess.run(cmd, capture_output=True, text=True, shell=False)
         if check and p.returncode != 0:
             raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout, p.stderr)
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
     except FileNotFoundError as e:
         return 127, "", str(e)
 
-def run_ps(ps_script: str) -> Tuple[int, str, str]:
-    """Executa um comando PowerShell sem perfil e com ExecutionPolicy bypass."""
+def run_ps(ps_script):
     return run([
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", ps_script
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script
     ])
 
-def has_admin_rights() -> bool:
+def has_admin_rights():
     ps = "[bool]([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
     code, out, _ = run_ps(ps)
     return out.strip().lower() == "true"
@@ -39,19 +33,17 @@ def has_admin_rights() -> bool:
 # -----------------------------
 # Coleta de informações
 # -----------------------------
-def get_windows_key() -> str:
-    # Tenta OEM/retail quando disponível
+def get_windows_key():
     ps_cmd = r"(Get-WmiObject -query 'select * from SoftwareLicensingService').OA3xOriginalProductKey"
     _, out, _ = run_ps(ps_cmd)
     return out.strip() or "(não encontrada)"
 
-def get_bios_serial() -> str:
+def get_bios_serial():
     ps_cmd = r"(Get-WmiObject Win32_BIOS | Select-Object -ExpandProperty SerialNumber)"
     _, out, _ = run_ps(ps_cmd)
     return out.strip() or "(não encontrada)"
 
-def get_device_name() -> str:
-    # CsName = nome do computador
+def get_device_name():
     ps_cmd = r"(Get-ComputerInfo -Property 'CsName').CsName"
     _, out, _ = run_ps(ps_cmd)
     return out.strip() or "(não encontrado)"
@@ -59,37 +51,20 @@ def get_device_name() -> str:
 # -----------------------------
 # Winget helpers
 # -----------------------------
-def winget_available() -> bool:
+def winget_available():
     return shutil.which("winget") is not None
 
-def winget_search(query: str) -> Optional[str]:
-    """
-    Retorna um possível 'Id' a partir do 'winget search'.
-    Critérios simples: pega a primeira linha que contenha 'Id'.
-    """
-    code, out, err = run(["winget", "search", "--name", query])
+def winget_search(query):
+    code, out, _ = run(["winget", "search", "--name", query])
     if code != 0:
         return None
-
-    # A saída do winget é tabular. Tentamos achar uma linha com "Id"
-    # Ex.: "Inkscape Inkscape  ...  Inkscape.Inkscape"
-    lines = [l for l in out.splitlines() if l.strip()]
-    # Ignora o cabeçalho até atingir linhas de resultados (heurística)
-    for line in lines:
-        # Normalmente o ID está na última coluna.
+    for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 2 and "." in parts[-1] and not line.lower().startswith("name"):
-            candidate = parts[-1]
-            # Filtra resultados "non-package" óbvios (heurística bem leve)
-            if len(candidate) >= 5 and candidate.count(".") >= 1:
-                return candidate
+            return parts[-1]
     return None
 
-def winget_list_id_startswith(prefix: str) -> Optional[str]:
-    """
-    Checa se algo instalado tem ID começando com `prefix`.
-    Retorna o ID completo se achar.
-    """
+def winget_list_id_startswith(prefix):
     code, out, _ = run(["winget", "list"])
     if code != 0:
         return None
@@ -101,87 +76,137 @@ def winget_list_id_startswith(prefix: str) -> Optional[str]:
                 return candidate
     return None
 
-def winget_install_or_upgrade(ids_or_queries: list[str]) -> Tuple[bool, str]:
-    """
-    Tenta instalar/atualizar usando:
-      1) ID exato, se fornecido
-      2) Busca por nome (winget search) e instala o primeiro ID compatível
-    Retorna (sucesso, mensagem).
-    """
+def winget_install_or_upgrade(ids_or_queries):
     if not winget_available():
-        return False, "Winget não encontrado. Instale a Microsoft Store App Installer (winget) e tente novamente."
-
-    # Tenta na ordem:
-    # - se item parece um ID (tem ponto), tenta direto
-    # - senão, busca ID por 'winget search'
-    tried = []
-
+        return False, "Winget não encontrado. Instale a Microsoft Store 'App Installer' e tente novamente."
+    tentativas = []
     for token in ids_or_queries:
         token = token.strip()
         if not token:
             continue
-
-        # Descobre ID
         if "." in token:
             pkg_id = token
         else:
-            # primeiro: vê se já existe algo instalado com esse prefixo (heurística)
             installed_guess = winget_list_id_startswith(token.replace(" ", ""))
-            if installed_guess:
-                pkg_id = installed_guess
-            else:
-                found = winget_search(token)
-                pkg_id = found if found else None
-
+            pkg_id = installed_guess or winget_search(token)
         if not pkg_id:
-            tried.append(f"{token} (nenhum ID encontrado)")
+            tentativas.append(f"{token} (nenhum ID encontrado)")
             continue
 
-        # Se já está instalado, tenta upgrade primeiro
-        # upgrade --silent
-        up_code, up_out, up_err = run(["winget", "upgrade", "--id", pkg_id, "--silent",
-                                       "--accept-package-agreements", "--accept-source-agreements"])
+        up_code, _, _ = run(["winget", "upgrade", "--id", pkg_id, "--silent",
+                             "--accept-package-agreements", "--accept-source-agreements"])
         if up_code == 0:
             return True, f"Atualizado (ou já estava na última versão): {pkg_id}"
 
-        # Se upgrade não rolou (pode não haver atualização), tenta instalar (idempotente)
-        in_code, in_out, in_err = run(["winget", "install", "--id", pkg_id, "--silent",
-                                       "--accept-package-agreements", "--accept-source-agreements"])
+        in_code, _, _ = run(["winget", "install", "--id", pkg_id, "--silent",
+                             "--accept-package-agreements", "--accept-source-agreements"])
         if in_code == 0:
             return True, f"Instalado: {pkg_id}"
 
-        tried.append(f"{pkg_id} (upgrade:{up_code}; install:{in_code})")
+        tentativas.append(f"{pkg_id} (upgrade:{up_code}; install:{in_code})")
 
-    return False, "Falhou instalar/atualizar. Tentativas: " + "; ".join(tried)
+    return False, "Falhou instalar/atualizar. Tentativas: " + "; ".join(tentativas)
+
+# -----------------------------
+# Due Studio (download direto do fabricante)
+# -----------------------------
+DUE_STUDIO_SOURCES = [
+    # Páginas oficiais onde o botão "DUE STUDIO - 64 BITS" aparece com link direto
+    # (mantemos mais de uma para redundância)
+    "https://duelaser.zendesk.com/hc/pt-br/articles/4421456877581-V-Due-Studio-download",
+    "https://duemax.duelaser.com/contents/a2c06a93-b1df-41af-8561-0225e9c04a4b",
+    "https://duemax.duelaser.com/contents/1443694f-c096-4028-9ca3-cc13a0380f36",
+]
+
+# padrões comuns de instaladores (Inno Setup/NSIS/MSI)
+SILENT_SWITCHES = [
+    ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+    ["/S"],  # NSIS
+]
+
+def _http_get(url, timeout=30):
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+def _find_duestudio_download_url(html):
+    # Procura por links .exe/.msi que contenham due e studio no nome
+    m = re.findall(r'href=["\'](https?://[^"\']+(?:due|duestudio)[^"\']+\.(?:exe|msi))["\']', html, flags=re.I)
+    if m:
+        # Heurística: escolha o mais longo (geralmente o mais específico/recente)
+        m.sort(key=len, reverse=True)
+        return m[0]
+    # fallback: qualquer .exe/.msi na página
+    m = re.findall(r'href=["\'](https?://[^"\']+\.(?:exe|msi))["\']', html, flags=re.I)
+    return m[0] if m else None
+
+def download_latest_duestudio():
+    for src in DUE_STUDIO_SOURCES:
+        try:
+            html = _http_get(src)
+            url = _find_duestudio_download_url(html)
+            if url:
+                return url
+        except (URLError, HTTPError, TimeoutError):
+            continue
+    return None
+
+def install_duestudio():
+    print("→ Procurando o instalador mais recente do Due Studio no site da Due Laser...")
+    url = download_latest_duestudio()
+    if not url:
+        return False, "Não foi possível localizar o link de download do Due Studio nas páginas de suporte da Due Laser."
+
+    print(f"  Encontrado: {url}")
+    # Baixa para pasta temporária
+    tmpdir = tempfile.mkdtemp(prefix="duestudio_")
+    filename = os.path.join(tmpdir, os.path.basename(url.split("?")[0]))
+    try:
+        print("→ Baixando instalador...")
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=120) as resp, open(filename, "wb") as f:
+            f.write(resp.read())
+    except Exception as e:
+        return False, f"Falha ao baixar o instalador: {e}"
+
+    # Tenta instalar silenciosamente
+    for switches in SILENT_SWITCHES:
+        code, _, _ = run([filename] + switches)
+        if code == 0:
+            return True, f"Instalado (silencioso): {os.path.basename(filename)}"
+
+    # Se os switches não funcionarem, tenta instalação normal
+    code, _, _ = run([filename])
+    if code == 0:
+        return True, f"Instalado (interativo): {os.path.basename(filename)}"
+    return False, f"Falha ao executar o instalador ({code}). Tente executar manualmente: {filename}"
 
 # -----------------------------
 # Lógica principal
 # -----------------------------
 PROGRAMAS = [
-    # IDs preferenciais conhecidos (quando possível) seguidos de termos de busca alternativos
-    # Inkscape
     ["Inkscape.Inkscape", "Inkscape"],
-    # UltiMaker Cura
     ["Ultimaker.Cura", "UltiMaker Cura", "Cura"],
-    # DueStudio (não há um ID universal conhecido; fazemos busca por nome)
-    ["DueStudio", "Due Studio"]
 ]
 
 def instalar_programas():
     print()
     print("-------------------------------------------")
-    print("Instalação/Atualização de Programas (Winget)")
+    print("Instalação/Atualização de Programas")
     print("-------------------------------------------")
 
     if not has_admin_rights():
-        print("⚠️ Recomenda-se executar este programa COMO ADMINISTRADOR para instalar/atualizar aplicativos.")
+        print("⚠️ Recomenda-se executar este programa COMO ADMINISTRADOR.")
         print()
 
+    # Winget apps
     for variantes in PROGRAMAS:
-        nome_exibicao = variantes[0]
         ok, msg = winget_install_or_upgrade(variantes)
-        status = "✅" if ok else "❌"
-        print(f"{status} {msg}")
+        print(("✅ " if ok else "❌ ") + msg)
+
+    # Due Studio (download direto)
+    ok, msg = install_duestudio()
+    print(("✅ " if ok else "❌ ") + f"Due Studio: {msg}")
 
 def coletar_informacoes():
     key = get_windows_key()

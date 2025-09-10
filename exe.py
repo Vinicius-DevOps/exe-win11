@@ -1,15 +1,7 @@
 # setup_info_installer.py
 import subprocess
 import shutil
-import tempfile
 import os
-import re
-from urllib.request import urlopen, Request, build_opener, HTTPCookieProcessor
-from urllib.error import URLError, HTTPError
-from http.cookiejar import CookieJar
-
-# ====== CONFIG: ID do arquivo no Google Drive (Due Studio) ======
-DUE_STUDIO_DRIVE_FILE_ID = "1NVMlI1mzSxcFXsbxi-wcDLR69ARxzS_Y"
 
 # ===============================================================
 # Utilidades
@@ -24,11 +16,11 @@ def run(cmd, check=False):
         return 127, "", str(e)
 
 def run_ps(ps_script):
-    return run(["powershell","-NoProfile","-ExecutionPolicy","Bypass","-Command", ps_script])
+    return run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
 
 def has_admin_rights():
-    ps = ("[bool]([Security.Principal.WindowsPrincipal]"
-          " [Security.Principal.WindowsIdentity]::GetCurrent())."
+    ps = ('[bool]([Security.Principal.WindowsPrincipal]'
+          ' [Security.Principal.WindowsIdentity]::GetCurrent()).'
           "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)")
     _, out, _ = run_ps(ps)
     return out.strip().lower() == "true"
@@ -93,69 +85,6 @@ def winget_install_or_upgrade(ids_or_queries):
     return False, "Falhou instalar/atualizar. Tentativas: " + "; ".join(tentativas)
 
 # ===============================================================
-# Google Drive download (com token de confirmação p/ arquivos grandes)
-# ===============================================================
-def gdrive_download(file_id, dest_path, timeout=120):
-    """
-    Faz download de um arquivo público do Google Drive.
-    Lida com a página de aviso de arquivo grande (token 'confirm').
-    """
-    cj = CookieJar()
-    opener = build_opener(HTTPCookieProcessor(cj))
-    base = f"https://drive.google.com/uc?export=download&id={file_id}"
-
-    def _fetch(url):
-        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        return opener.open(req, timeout=timeout)
-
-    # 1ª tentativa
-    resp = _fetch(base)
-    data = resp.read()
-    text = data.decode("utf-8", errors="ignore")
-
-    # Se veio HTML com token de confirmação, refaz a requisição
-    match = re.search(r'confirm=([0-9A-Za-z_]+)', html_content)
-    if m:
-        confirm = m.group(1)
-        resp = _fetch(f"{base}&confirm={confirm}")
-        data = resp.read()
-
-    # Salva
-    with open(dest_path, "wb") as f:
-        f.write(data)
-    return True
-
-# ===============================================================
-# Due Studio (Drive -> instalar silencioso se possível)
-# ===============================================================
-SILENT_SWITCHES = [
-    ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],  # Inno Setup
-    ["/S"],  # NSIS
-]
-
-def install_duestudio_from_drive():
-    print("→ Baixando Due Studio do Google Drive...")
-    tmpdir = tempfile.mkdtemp(prefix="duestudio_")
-    filename = os.path.join(tmpdir, "Instalador_DueStudio.exe")
-    try:
-        ok = gdrive_download(DUE_STUDIO_DRIVE_FILE_ID, filename)
-        if not ok: return False, "Falha ao baixar do Google Drive."
-    except Exception as e:
-        return False, f"Falha ao baixar do Google Drive: {e}"
-
-    # tenta silencioso
-    for switches in SILENT_SWITCHES:
-        code,_,_ = run([filename] + switches)
-        if code == 0:
-            return True, "Instalado (silencioso) a partir do Google Drive."
-
-    # fallback interativo
-    code,_,_ = run([filename])
-    if code == 0:
-        return True, "Instalado (interativo) a partir do Google Drive."
-    return False, f"Falha ao executar o instalador ({code}). Arquivo em: {filename}"
-
-# ===============================================================
 # Fluxo principal
 # ===============================================================
 PROGRAMAS_WINGET = [
@@ -185,10 +114,6 @@ def instalar_programas():
     for variantes in PROGRAMAS_WINGET:
         ok, msg = winget_install_or_upgrade(variantes)
         print(("✅ " if ok else "❌ ") + msg)
-
-    # Due Studio via Drive
-    ok, msg = install_duestudio_from_drive()
-    print(("✅ " if ok else "❌ ") + f"Due Studio: {msg}")
 
 def main():
     coletar_informacoes()

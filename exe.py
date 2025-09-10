@@ -114,7 +114,7 @@ def gdrive_download(file_id, dest_path, timeout=120):
     text = data.decode("utf-8", errors="ignore")
 
     # Se veio HTML com token de confirmação, refaz a requisição
-    m = re.search(r'confirm=([0-9A-Za-z_]+)', text)
+    match = re.search(r'confirm=([0-9A-Za-z_]+)', html_content)
     if m:
         confirm = m.group(1)
         resp = _fetch(f"{base}&confirm={confirm}")

@@ -8,7 +8,7 @@ import os
 # ===============================================================
 def run(cmd, check=False):
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+        p = subprocess.run(cmd, capture_output=True, text=True, shell=False, encoding='utf-8', errors='ignore')
         if check and p.returncode != 0:
             raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout, p.stderr)
         return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
@@ -22,6 +22,7 @@ def has_admin_rights():
     ps = ('[bool]([Security.Principal.WindowsPrincipal]'
           ' [Security.Principal.WindowsIdentity]::GetCurrent()).'
           "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)")
+
     _, out, _ = run_ps(ps)
     return out.strip().lower() == "true"
 
@@ -48,54 +49,48 @@ def get_device_name():
 # ===============================================================
 def winget_available(): return shutil.which("winget") is not None
 
-def winget_search(query):
-    code, out, _ = run(["winget", "search", "--name", query])
-    if code != 0: return None
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and "." in parts[-1] and not line.lower().startswith("name"):
-            return parts[-1]
-    return None
-
-def winget_list_id_startswith(prefix):
-    code, out, _ = run(["winget", "list"])
-    if code != 0: return None
-    for line in out.splitlines():
-        parts = line.split()
-        if parts:
-            candidate = parts[-1]
-            if candidate.lower().startswith(prefix.lower()): return candidate
-    return None
-
 def winget_install_or_upgrade(ids_or_queries):
     if not winget_available():
         return False, "Winget não encontrado. Instale a Microsoft Store 'App Installer' e tente novamente."
-    tentativas = []
-    for token in ids_or_queries:
-        token = token.strip()
-        if not token: continue
-        pkg_id = token if "." in token else (winget_list_id_startswith(token.replace(" ","")) or winget_search(token))
-        if not pkg_id:
-            tentativas.append(f"{token} (nenhum ID encontrado)"); continue
-        up_code,_,_ = run(["winget","upgrade","--id",pkg_id,"--silent","--accept-package-agreements","--accept-source-agreements"])
-        if up_code == 0: return True, f"Atualizado (ou já estava na última versão): {pkg_id}"
-        in_code,_,_ = run(["winget","install","--id",pkg_id,"--silent","--accept-package-agreements","--accept-source-agreements"])
-        if in_code == 0: return True, f"Instalado: {pkg_id}"
-        tentativas.append(f"{pkg_id} (upgrade:{up_code}; install:{in_code})")
-    return False, "Falhou instalar/atualizar. Tentativas: " + "; ".join(tentativas)
+    
+    for identifier in ids_or_queries:
+        identifier = identifier.strip()
+        if not identifier: continue
+        
+        # O comando 'install' do winget também atualiza o pacote se ele já estiver instalado.
+        # Usamos --accept-package-agreements e --accept-source-agreements para automatizar.
+        cmd = [
+            "winget", "install", "--id", identifier, 
+            "--silent", "--accept-package-agreements", "--accept-source-agreements"
+        ]
+        
+        code, stdout, stderr = run(cmd)
+        
+        if code == 0:
+            # Sucesso pode significar instalado ou já atualizado.
+            return True, f"Instalado/Atualizado com sucesso: {identifier}"
+        else:
+            # Tenta o próximo identificador em caso de falha
+            print(f"Tentativa com '{identifier}' falhou (código: {code})...")
+            print(f"  stdout: {stdout}")
+            print(f"  stderr: {stderr}")
+
+    return False, f"Falhou instalar/atualizar para todas as tentativas: {', '.join(ids_or_queries)}"
 
 # ===============================================================
 # Fluxo principal
 # ===============================================================
 PROGRAMAS_WINGET = [
+    # Tenta primeiro o ID completo, depois o nome mais comum
     ["Inkscape.Inkscape", "Inkscape"],
-    ["Ultimaker.Cura", "UltiMaker Cura", "Cura"],
+    ["Ultimaker.Cura", "Cura"],
 ]
 
 def coletar_informacoes():
     print("-------------------------------------------")
     print("Coleta de informações")
-    print("-------------------------------------------\n")
+    print("-------------------------------------------\
+")
     print(f"Nome do dispositivo: {get_device_name()}")
     print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
     print(f"Chave do Windows: {get_windows_key()}")

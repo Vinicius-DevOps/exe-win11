@@ -27,7 +27,7 @@ def run_ps(ps_script):
 def has_admin_rights():
     ps = "([bool]([Security.Principal.WindowsPrincipal]" \
           " [Security.Principal.WindowsIdentity]::GetCurrent())." \
-          "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)")
+          "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
     _, out, _ = run_ps(ps)
     return out.strip().lower() == "true"
 
